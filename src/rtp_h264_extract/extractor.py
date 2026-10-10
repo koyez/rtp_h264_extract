@@ -56,8 +56,11 @@ class NalUnit:
         return self.payload[0] & 0x1F if self.payload else -1
 
 
-def run_tshark(tshark: str, args: list[str]) -> str:
-    cmd = [tshark, *args]
+def run_tshark(tshark: str, args: list[str], decode_as: Iterable[str] = ()) -> str:
+    cmd = [tshark]
+    for rule in decode_as:
+        cmd.extend(["-d", rule])
+    cmd.extend(args)
     try:
         proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
@@ -80,7 +83,8 @@ def _decode_hex(value: str) -> bytes:
         return b""
 
 
-def load_rtp_packets(tshark: str, pcap: Path, display_filter: str) -> list[RtpPacket]:
+def load_rtp_packets(tshark: str, pcap: Path, display_filter: str,
+                     decode_as: Iterable[str] = ()) -> list[RtpPacket]:
     expr = "rtp"
     if display_filter:
         expr += f" && ({display_filter})"
@@ -92,7 +96,7 @@ def load_rtp_packets(tshark: str, pcap: Path, display_filter: str) -> list[RtpPa
     out = run_tshark(tshark, [
         "-r", str(pcap), "-Y", expr, "-T", "fields", *sum((["-e", f] for f in fields), []),
         "-E", "header=n", "-E", "separator=\t", "-E", "quote=d", "-E", "occurrence=f",
-    ])
+    ], decode_as)
     packets: list[RtpPacket] = []
     for line_no, row in enumerate(csv.reader(out.splitlines(), delimiter="\t"), 1):
         if len(row) != len(fields) or not row[-1]:
@@ -110,7 +114,8 @@ def load_rtp_packets(tshark: str, pcap: Path, display_filter: str) -> list[RtpPa
     return packets
 
 
-def read_sdp_parameter_sets(tshark: str, pcap: Path) -> dict[int, tuple[bytes, bytes]]:
+def read_sdp_parameter_sets(tshark: str, pcap: Path,
+                            decode_as: Iterable[str] = ()) -> dict[int, tuple[bytes, bytes]]:
     """Return {RTP payload type: (SPS, PPS)} from RTSP SDP responses.
 
     tcp.payload is used instead of rtsp.data because Wireshark exposes the SDP
@@ -123,7 +128,7 @@ def read_sdp_parameter_sets(tshark: str, pcap: Path) -> dict[int, tuple[bytes, b
         "-r", str(pcap), "-Y", "rtsp", "-T", "fields",
         *sum((["-e", f] for f in fields), []), "-E", "header=n",
         "-E", "separator=\t", "-E", "quote=d", "-E", "occurrence=a",
-    ])
+    ], decode_as)
     blobs: list[bytes] = []
     for row in csv.reader(out.splitlines(), delimiter="\t"):
         for value in row[1:]:
@@ -319,6 +324,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("-Y", "--filter", default="",
                         help="Wireshark display filter selecting one RTP video stream, e.g. 'udp.stream==140 && rtp.ssrc==0xd4c1700a'")
+    parser.add_argument("-d", "--decode-as", action="append", default=[],
+                        metavar="SELECTOR,PROTOCOL",
+                        help="tshark Decode As rule, e.g. 'udp.port==28000,rtp'; may be repeated")
     parser.add_argument("--tshark", default=shutil.which("tshark") or "/Applications/Wireshark.app/Contents/MacOS/tshark")
     parser.add_argument("--sps", help="base64 or hex SPS override when SDP is absent")
     parser.add_argument("--pps", help="base64 or hex PPS override when SDP is absent")
@@ -326,16 +334,17 @@ def main(argv: list[str] | None = None) -> int:
     if not args.pcap.is_file():
         raise ExtractError(f"pcap does not exist: {args.pcap}")
 
-    packets = load_rtp_packets(args.tshark, args.pcap, args.filter)
+    packets = load_rtp_packets(args.tshark, args.pcap, args.filter, args.decode_as)
     if not packets:
-        raise ExtractError("no RTP packets matched; check Decode As RTP/H264 and --filter")
+        raise ExtractError("no RTP packets matched; check --filter or add "
+                           "-d udp.port==PORT,rtp to decode UDP as RTP")
     keys = {(p.src, p.sport, p.dst, p.dport, p.ssrc, p.pt) for p in packets}
     if len(keys) > 1:
         raise ExtractError(f"filter selected {len(keys)} RTP streams; add IP/port/SSRC to --filter")
 
     if bool(args.sps) != bool(args.pps):
         raise ExtractError("--sps and --pps must be provided together")
-    sprop = read_sdp_parameter_sets(args.tshark, args.pcap)
+    sprop = read_sdp_parameter_sets(args.tshark, args.pcap, args.decode_as)
     if args.sps and args.pps:
         def parse_param(value: str) -> bytes:
             value = value.strip()

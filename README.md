@@ -54,6 +54,8 @@ rtp-h264-extract --help
 python -m rtp_h264_extract --help
 ```
 
+激活虚拟环境后，可以在任意目录执行 `rtp-h264-extract`。输入和输出可以使用绝对路径；`-o video.h264` 这样的相对输出路径会写入当前执行目录。
+
 ## 基本用法
 
 过滤器必须只选中一个 RTP 视频流。推荐使用 IP、端口和 SSRC；`udp.stream` 是 Wireshark 针对某一份抓包生成的编号，在其他抓包中通常会变化。
@@ -80,6 +82,33 @@ stream: 172.16.100.13:28000 -> 172.16.100.14:23036, SSRC=0xd4c1700a, PT=97
 sequence gaps: 0; FU-A packets: 894; STAP-A packets: 135
 parameter sets: SDP; pre-IDR NALs dropped: 20; written NALs: 1352
 ```
+
+## 将 UDP 强制解析为 RTP
+
+有些抓包没有足够的信令让 tshark 自动识别 RTP。这时，即使 UDP 包确实存在，包含 `rtp.ssrc` 的过滤器也会匹配到 0 包。使用 `-d/--decode-as` 显式指定解析方式，无需临时 tshark 包装脚本：
+
+```sh
+rtp-h264-extract 1.pcap \
+  -d udp.port==28000,rtp \
+  -Y 'ip.dst==172.16.100.13 && udp.dstport==28000 && rtp.ssrc==0xd4c1700a' \
+  -o video.h264
+```
+
+`udp.port==28000,rtp` 表示将源端口或目的端口为 `28000` 的 UDP 包按 RTP 解析。这份抓包中，该命令选择的是上行流 `172.16.100.13:32142 → 172.16.100.13:28000`，与前面发往播放器的下行流不同。其他抓包应使用对应的端口和过滤条件。
+
+`--decode-as udp.port==28000,rtp` 与 `-d udp.port==28000,rtp` 等价。参数可以重复，例如同时指定 UDP/RTP 和非标准端口上的 RTSP：
+
+```sh
+rtp-h264-extract 1.pcap \
+  -d udp.port==28000,rtp \
+  -d tcp.port==28554,rtsp \
+  -Y 'ip.dst==172.16.100.13 && udp.dstport==28000 && rtp.ssrc==0xd4c1700a' \
+  -o video.h264
+```
+
+这些规则会传给读取 RTP 和读取 RTSP SDP 的两次 tshark 调用。该参数负责协议识别；SPS/PPS 的读取和 H.264 分片重组仍由程序处理。已被 tshark 自动识别为 RTP 的流可以省略 `-d`。
+
+`--tshark` 仍可用于指定 tshark 可执行文件的位置，例如 `--tshark /Applications/Wireshark.app/Contents/MacOS/tshark`，通常无需手动指定。
 
 ## 封装为 MP4
 
@@ -117,13 +146,13 @@ rtp-h264-extract capture.pcap \
 
 ## 动态 Payload Type
 
-如果 tshark 输出 `no RTP packets matched`，先确认 Wireshark 能识别 RTP：
+如果程序输出 `no RTP packets matched`：
 
-1. 在 Wireshark 中对相关 UDP 流执行 **Decode As... → RTP**。
-2. 确认 RTP payload type 与 H.264 的动态 PT 映射正确。
-3. 用 `rtp.ssrc`、源/目的 IP 和端口缩小过滤范围。
+1. 检查源/目的 IP、端口和 SSRC 是否对应目标方向。
+2. 对未自动识别的 UDP 流增加 `-d udp.port==实际端口,rtp`。
+3. 用 `rtp.ssrc`、源/目的 IP 和端口确保过滤器只选中一个 RTP H.264 视频流。
 
-程序只依赖 tshark 的 `rtp.*` 字段，不需要通过 Wireshark 菜单运行 Lua。
+Wireshark 界面中的 **Decode As... → RTP** 设置不会由本程序自动传给独立的 tshark 进程；命令行使用 `-d` 显式指定即可。程序读取 `rtp.payload` 并自行解析 H.264 NAL，不依赖 tshark 将动态 PT 进一步识别为 H.264，也不需要通过 Wireshark 菜单运行 Lua。
 
 ## 测试
 
