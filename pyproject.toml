@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtp-h264-extract"
+version = "0.1.0"
+description = "Extract Annex-B H.264 from RTP packets in pcap files"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Koyez"}]
+keywords = ["rtp", "h264", "pcap", "wireshark", "tshark"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: MacOS",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+rtp-h264-extract = "rtp_h264_extract.extractor:cli"
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
